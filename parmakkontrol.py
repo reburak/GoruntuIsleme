@@ -1,160 +1,218 @@
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
+from threading import Thread
+import time
 import cv2
 import mediapipe as mp
 import pyautogui
-import numpy as np
 from screeninfo import get_monitors
 import math
-import time
-import tkinter as tk
-from threading import Thread
 from collections import deque
 
-class CalibrationScreen:
-    def __init__(self, screen_width, screen_height, cap, controller):
-        self.root = tk.Tk()
-        self.root.attributes('-fullscreen', True)
-        self.root.attributes('-topmost', True)
+class TutorialOverlay:
+    def __init__(self, root, screen_width, screen_height):
+        self.window = tk.Toplevel(root)
+        self.window.title("El Kontrollü Fare Eğitimi")
         
-        self.screen_width = screen_width
-        self.screen_height = screen_height
-        self.cap = cap
-        self.controller = controller
+        # Pencere boyutunu ve konumunu ayarla
+        window_width = 1000
+        window_height = 600
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.window.geometry(f"{window_width}x{window_height}+{x}+{y}")
         
-        self.calibration_points = [
-            (50, 50),  # Sol üst
-            (screen_width - 50, 50),  # Sağ üst
-            (screen_width//2, screen_height//2),  # Orta
-            (50, screen_height - 50),  # Sol alt
-            (screen_width - 50, screen_height - 50)  # Sağ alt
+        # Modern görünüm için tema renkleri
+        self.colors = {
+            'bg': '#f0f0f0',
+            'primary': '#2196F3',
+            'text': '#333333',
+            'button': '#1976D2',
+            'button_text': 'white'
+        }
+        
+        self.window.configure(bg=self.colors['bg'])
+        
+        self.steps = [
+            {
+                'title': 'El Kontrollü Fare - Eğitim',
+                'text': 'Bu eğitim size el hareketleriyle fare kontrolünü öğretecek.\nDevam etmek için İleri butonuna tıklayın.',
+                'image': 'images/welcome.png'
+            },
+            {
+                'title': 'İşaretparmağı - Fare Hareketi',
+                'text': 'İşaretparmağınızı kaldırın ve hareket ettirin.\nParmağınızın hareketi fareyi kontrol edecek.',
+                'image': 'images/pointer_move.png'
+            },
+            {
+                'title': 'Baş Parmak + İşaret Parmağı - Sol Tık',
+                'text': 'Baş parmak ve işaret parmağınızı birleştirin.\nBu hareket sol tıklamayı tetikler.',
+                'image': 'images/left_click.png'
+            },
+            {
+                'title': 'Baş Parmak + Orta Parmak - Sağ Tık',
+                'text': 'Baş parmak ve orta parmağınızı birleştirin.\nBu hareket sağ tıklamayı tetikler.',
+                'image': 'images/right_click.png'
+            },
+            {
+                'title': 'İşaret Parmağı Yukarı/Aşağı - Kaydırma',
+                'text': 'İşaret parmağınızı yukarı/aşağı hareket ettirin.\nBu hareket sayfayı kaydırır.',
+                'image': 'images/scroll.png'
+            }
         ]
-        self.current_point = 0
-        self.calibration_data = []
-        self.is_complete = False
-        self.tracking = False
         
-        self.canvas = tk.Canvas(self.root, width=screen_width, height=screen_height, 
-                              bg='black', highlightthickness=0)
-        self.canvas.pack()
+        self.current_step = 0
+        self.setup_ui()
+        self.load_images()
+        self.update_content()
         
-        self.text = self.canvas.create_text(screen_width//2, screen_height//2 - 50,
-                                          text="Kalibrasyon başlıyor...",
-                                          fill="white", font=("Arial", 24))
-        self.point = None
-        self.timer_text = None
-        # Cursor boyutunu 2 katına çıkar
-        self.cursor = self.canvas.create_oval(0, 0, 60, 60, fill="blue", outline="white", width=2)
-        self.canvas.itemconfigure(self.cursor, state='hidden')
+    def setup_ui(self):
+        # Ana container
+        self.main_frame = tk.Frame(self.window, bg=self.colors['bg'])
+        self.main_frame.pack(expand=True, fill='both', padx=40, pady=10)
         
-        self.root.after(1000, self.start_calibration)
+        # Başlık
+        self.title_label = tk.Label(self.main_frame, 
+                                  font=('Helvetica', 24, 'bold'),
+                                  bg=self.colors['bg'],
+                                  fg=self.colors['text'])
+        self.title_label.pack(pady=(0, 10))
         
-    def start_calibration(self):
-        self.tracking = True
-        self.update_tracking()
-        self.show_next_point()
+        # Görsel container
+        self.image_frame = tk.Frame(self.main_frame, 
+                                  bg=self.colors['bg'],
+                                  height=300)
+        self.image_frame.pack(fill='x', pady=10)
+        self.image_frame.pack_propagate(False)
+        
+        self.image_label = tk.Label(self.image_frame, bg=self.colors['bg'])
+        self.image_label.pack(expand=True)
+        
+        # Açıklama metni
+        self.text_label = tk.Label(self.main_frame,
+                                 font=('Helvetica', 14),
+                                 bg=self.colors['bg'],
+                                 fg=self.colors['text'],
+                                 wraplength=600)
+        self.text_label.pack(pady=30)
+        
+        # İlerleme göstergesi
+        self.progress_frame = tk.Frame(self.main_frame, bg=self.colors['bg'])
+        self.progress_frame.pack(fill='x', pady=10)
+        
+        self.progress_dots = []
+        for i in range(len(self.steps)):
+            dot = tk.Label(self.progress_frame, 
+                         text='○', 
+                         font=('Helvetica', 16),
+                         bg=self.colors['bg'],
+                         fg=self.colors['primary'])
+            dot.pack(side='left', padx=5)
+            self.progress_dots.append(dot)
+        
+        # Buton container
+        self.button_frame = tk.Frame(self.main_frame, bg=self.colors['bg'])
+        self.button_frame.pack(pady=10)
+        
+        # Özel buton stili
+        button_style = {
+            'font': ('Helvetica', 12),
+            'bg': self.colors['button'],
+            'fg': self.colors['button_text'],
+            'activebackground': self.colors['primary'],
+            'activeforeground': self.colors['button_text'],
+            'relief': 'flat',
+            'padx': 20,
+            'pady': 10
+        }
+        
+        self.prev_button = tk.Button(self.button_frame,
+                                   text='← Geri',
+                                   command=self.prev_step,
+                                   **button_style)
+        
+        self.next_button = tk.Button(self.button_frame,
+                                   text='İleri →',
+                                   command=self.next_step,
+                                   **button_style)
+        
+        self.finish_button = tk.Button(self.button_frame,
+                                     text='Başla',
+                                     command=self.finish_tutorial,
+                                     **button_style)
     
-    def update_tracking(self):
-        if not self.tracking:
-            return
-            
-        ret, frame = self.cap.read()
-        if ret:
-            frame = cv2.flip(frame, 1)
-            results = self.controller.hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            
-            if results.multi_hand_landmarks:
-                landmarks = results.multi_hand_landmarks[0].landmark
-                index_tip = landmarks[8]
-                
-                # El pozisyonunu al ve aynı dönüşümleri kullan
-                raw_x = (1 - index_tip.x)
-                raw_y = index_tip.y
-                
-                # Mouse için koordinat dönüşümü
-                mapped_x = raw_x * (raw_x * raw_x) * self.screen_width * self.controller.movement_scale
-                mapped_y = raw_y * (raw_y * raw_y) * self.screen_height * self.controller.movement_scale
-                
-                mouse_x, mouse_y = self.controller.mouse_controller.update_target(mapped_x, mapped_y)
-                mouse_x = max(0, min(self.screen_width - 1, mouse_x))
-                mouse_y = max(0, min(self.screen_height - 1, mouse_y))
-                
-                # Mouse'u hareket ettir
+    def load_images(self):
+        self.images = {}
+        for step in self.steps:
+            if step['image']:
                 try:
-                    pyautogui.moveTo(mouse_x, mouse_y, _pause=False)
-                except:
-                    pass
-                
-                # Görsel cursor'ı mouse pozisyonuna göre güncelle
-                self.canvas.itemconfigure(self.cursor, state='normal')
-                self.canvas.coords(self.cursor, mouse_x-15, mouse_y-15, mouse_x+15, mouse_y+15)
-                
-                if self.point and self.countdown_time > 0:
-                    # Hedef noktayla mouse pozisyonu arasındaki mesafeyi kontrol et
-                    target_x, target_y = self.calibration_points[self.current_point]
-                    distance = math.sqrt((mouse_x - target_x)**2 + (mouse_y - target_y)**2)
-                    
-                    # Eğer mouse hedeften uzaksa sayacı sıfırla
-                    if distance > 100:  # 100 piksel eşik değeri
-                        self.countdown_time = 3
-                        self.canvas.itemconfig(self.timer_text, text="3")
-            else:
-                self.canvas.itemconfigure(self.cursor, state='hidden')
-        
-        self.root.after(10, self.update_tracking)
-        
-    def show_next_point(self):
-        if self.current_point >= len(self.calibration_points):
-            self.finish_calibration()
-            return
-            
-        if self.point:
-            self.canvas.delete(self.point)
-        if self.timer_text:
-            self.canvas.delete(self.timer_text)
-            
-        x, y = self.calibration_points[self.current_point]
-        self.point = self.canvas.create_oval(x-15, y-15, x+15, y+15, fill="red")
-        self.canvas.itemconfig(self.text, text=f"Hedefi 3 saniye boyunca işaret edin")
-        
-        self.countdown_time = 3
-        self.update_timer()
-        
-    def update_timer(self):
-        if not self.point:
-            return
-            
-        if self.timer_text:
-            self.canvas.delete(self.timer_text)
-            
-        x, y = self.calibration_points[self.current_point]
-        self.timer_text = self.canvas.create_text(x, y+40,
-                                                text=str(self.countdown_time),
-                                                fill="white", font=("Arial", 20))
-                                                
-        if self.countdown_time > 0:
-            self.countdown_time -= 1
-            self.root.after(1000, self.update_timer)
-        else:
-            # Kalibrasyon noktasının koordinatlarını kaydet
-            self.calibration_data.append((x, y))
-            self.current_point += 1
-            self.root.after(100, self.show_next_point)
-            
-    def finish_calibration(self):
-        self.canvas.itemconfig(self.text, text="Kalibrasyon tamamlandı!")
-        self.is_complete = True
-        self.tracking = False
-        
-        # Kalibrasyon tamamlandığında pencereyi kapat
-        self.root.after(1000, self.cleanup_and_close)
+                    # Görsel dosyasını yükle ve boyutlandır
+                    image = Image.open(step['image'])
+                    image = image.resize((300, 300), Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(image)
+                    self.images[step['image']] = photo
+                except Exception as e:
+                    print(f"Görsel yükleme hatası ({step['image']}): {e}")
+                    # Hata durumunda varsayılan görsel
+                    self.create_default_image(step['image'])
     
-    def cleanup_and_close(self):
-        self.tracking = False
-        if self.root:
-            self.root.quit()
-            self.root.destroy()
+    def create_default_image(self, image_key):
+        # Varsayılan görsel oluştur
+        default_image = Image.new('RGB', (300, 300), color='#f5f5f5')
+        draw = ImageDraw.Draw(default_image)
+        try:
+            font = ImageFont.truetype("arial.ttf", 20)
+        except:
+            font = ImageFont.load_default()
         
-    def run(self):
-        self.root.mainloop()
+        draw.text((150, 150), "Görsel\nBulunamadı", 
+                 font=font,
+                 fill='#666666', 
+                 anchor="mm")
+        self.images[image_key] = ImageTk.PhotoImage(default_image)
+    
+    def update_content(self):
+        step = self.steps[self.current_step]
+        
+        # İçeriği güncelle
+        self.title_label.config(text=step['title'])
+        self.text_label.config(text=step['text'])
+        
+        # Görseli güncelle
+        if step['image'] and step['image'] in self.images:
+            self.image_label.config(image=self.images[step['image']])
+        else:
+            self.image_label.config(image='')
+        
+        # İlerleme noktalarını güncelle
+        for i, dot in enumerate(self.progress_dots):
+            dot.config(text='●' if i == self.current_step else '○')
+        
+        # Butonları güncelle
+        if self.current_step == 0:
+            self.prev_button.pack_forget()
+        else:
+            self.prev_button.pack(side='left', padx=10)
+            
+        if self.current_step == len(self.steps) - 1:
+            self.next_button.pack_forget()
+            self.finish_button.pack(side='left', padx=10)
+        else:
+            self.finish_button.pack_forget()
+            self.next_button.pack(side='left', padx=10)
+    
+    def next_step(self):
+        if self.current_step < len(self.steps) - 1:
+            self.current_step += 1
+            self.update_content()
+    
+    def prev_step(self):
+        if self.current_step > 0:
+            self.current_step -= 1
+            self.update_content()
+    
+    def finish_tutorial(self):
+        self.window.destroy()
 
 class SmoothMouseController:
     def __init__(self):
@@ -211,53 +269,15 @@ class HandMouseController:
         pyautogui.PAUSE = 0
         
         self.mouse_controller = SmoothMouseController()
-        self.movement_scale = 2.0  # Azaltıldı daha hassas kontrol için
+        self.movement_scale = 3.5
         
         self.click_cooldown = 0.03
         self.last_click_time = 0
         self.is_clicking = False
         self.is_dragging = False
-        
-        # Scroll ayarları
-        self.scroll_accumulator = 0
-        self.scroll_threshold = 0.05
-        self.scroll_speed = 120
+        self.scroll_threshold = 0.008
+        self.scroll_speed = 300
         self.prev_scroll_y = None
-        self.scroll_cooldown = 0.1
-        self.last_scroll_time = 0
-    
-    def update_calibration(self, calibration_data):
-        self.calibration_points = calibration_data
-        self.is_calibrated = True
-        
-        # Kalibrasyon matrisini hesapla
-        if len(calibration_data) >= 5:
-            self.calculate_calibration_matrix()
-    
-    def calculate_calibration_matrix(self):
-        # Basit bir ölçekleme matrisi hesapla
-        screen_points = np.array(self.calibration_points)
-        min_x = np.min(screen_points[:, 0])
-        max_x = np.max(screen_points[:, 0])
-        min_y = np.min(screen_points[:, 1])
-        max_y = np.max(screen_points[:, 1])
-        
-        self.calibration_matrix = {
-            'x_scale': (max_x - min_x) / self.screen_width,
-            'y_scale': (max_y - min_y) / self.screen_height,
-            'x_offset': min_x,
-            'y_offset': min_y
-        }
-    
-    def apply_calibration(self, x, y):
-        if not self.is_calibrated or not self.calibration_matrix:
-            return x, y
-            
-        # Kalibrasyon matrisini uygula
-        cal_x = (x * self.calibration_matrix['x_scale']) + self.calibration_matrix['x_offset']
-        cal_y = (y * self.calibration_matrix['y_scale']) + self.calibration_matrix['y_offset']
-        
-        return cal_x, cal_y
         
     def process_hand(self, frame):
         results = self.hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -270,67 +290,8 @@ class HandMouseController:
         raw_x = (1 - landmarks[8].x)
         raw_y = landmarks[8].y
         
-        # Temel haritalama
-        mapped_x = raw_x * self.screen_width * self.movement_scale
-        mapped_y = raw_y * self.screen_height * self.movement_scale
-        
-        # Mouse pozisyonunu güncelle
-        x, y = self.mouse_controller.update_target(mapped_x, mapped_y)
-        x = max(0, min(self.screen_width - 1, x))
-        y = max(0, min(self.screen_height - 1, y))
-        
-        try:
-            pyautogui.moveTo(x, y, _pause=False)
-        except:
-            pass
-        
-        thumb_tip = landmarks[4]
-        index_tip = landmarks[8]
-        middle_tip = landmarks[12]
-        
-        thumb_index_dist = math.hypot(thumb_tip.x - index_tip.x, thumb_tip.y - index_tip.y)
-        thumb_middle_dist = math.hypot(thumb_tip.x - middle_tip.x, thumb_tip.y - middle_tip.y)
-        
-        current_time = time.time()
-        
-        # Click işlemleri
-        if thumb_index_dist < 0.03:
-            if not self.is_clicking and current_time - self.last_click_time > self.click_cooldown:
-                pyautogui.mouseDown(button='left', _pause=False)
-                self.is_clicking = True
-                self.last_click_time = current_time
-        elif self.is_clicking:
-            pyautogui.mouseUp(button='left', _pause=False)
-            self.is_clicking = False
-        
-        if thumb_middle_dist < 0.03:
-            if not self.is_dragging and current_time - self.last_click_time > self.click_cooldown:
-                pyautogui.mouseDown(button='right', _pause=False)
-                self.is_dragging = True
-                self.last_click_time = current_time
-        elif self.is_dragging:
-            pyautogui.mouseUp(button='right', _pause=False)
-            self.is_dragging = False
-        
-        # Scroll işlemi
-        if self.prev_scroll_y is None:
-            self.prev_scroll_y = index_tip.y
-        else:
-            current_time = time.time()
-            if current_time - self.last_scroll_time > self.scroll_cooldown:
-                scroll_diff = index_tip.y - self.prev_scroll_y
-                self.scroll_accumulator += scroll_diff
-                
-                if abs(self.scroll_accumulator) > self.scroll_threshold:
-                    scroll_amount = int(self.scroll_accumulator * self.scroll_speed)
-                    try:
-                        pyautogui.scroll(-scroll_amount, _pause=False)
-                        self.last_scroll_time = current_time
-                        self.scroll_accumulator = 0
-                    except:
-                        pass
-                        
-            self.prev_scroll_y = index_tip.y
+        mapped_x = raw_x * (raw_x * raw_x) * self.screen_width * self.movement_scale
+        mapped_y = raw_y * (raw_y * raw_y) * self.screen_height * self.movement_scale
         
         x, y = self.mouse_controller.update_target(mapped_x, mapped_y)
         x = max(0, min(self.screen_width - 1, x))
@@ -350,7 +311,6 @@ class HandMouseController:
         
         current_time = time.time()
         
-        # Click işlemleri
         if thumb_index_dist < 0.03:
             if not self.is_clicking and current_time - self.last_click_time > self.click_cooldown:
                 pyautogui.mouseDown(button='left', _pause=False)
@@ -369,37 +329,51 @@ class HandMouseController:
             pyautogui.mouseUp(button='right', _pause=False)
             self.is_dragging = False
         
-        # Geliştirilmiş scroll işlemi
         if self.prev_scroll_y is None:
             self.prev_scroll_y = index_tip.y
         else:
-            current_time = time.time()
-            if current_time - self.last_scroll_time > self.scroll_cooldown:
-                scroll_diff = index_tip.y - self.prev_scroll_y
-                self.scroll_accumulator += scroll_diff
-                
-                if abs(self.scroll_accumulator) > self.scroll_threshold:
-                    scroll_amount = int(self.scroll_accumulator * self.scroll_speed)
-                    try:
-                        pyautogui.scroll(-scroll_amount, _pause=False)
-                        self.last_scroll_time = current_time
-                        self.scroll_accumulator = 0
-                    except:
-                        pass
-                        
+            scroll_diff = index_tip.y - self.prev_scroll_y
+            if abs(scroll_diff) > self.scroll_threshold:
+                scroll_amount = int(scroll_diff * self.scroll_speed)
+                try:
+                    pyautogui.scroll(-scroll_amount, _pause=False)
+                except:
+                    pass
             self.prev_scroll_y = index_tip.y
 
 class App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("El Kontrollü Fare")
-        self.root.geometry("200x150")
-        self.root.attributes('-topmost', True)
         
-        monitor = get_monitors()[0]
-        self.screen_width = monitor.width
-        self.screen_height = monitor.height
+        # Eğitim durumunu kontrol et
+        self.tutorial_file = "tutorial_completed.txt"
+        self.tutorial_shown = self.check_tutorial_status()
         
+        # Ana pencere boyutu ve konumu
+        window_width = 400
+        window_height = 600
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        
+        # Tema renkleri
+        self.colors = {
+            'bg': '#f0f0f0',
+            'primary': '#2196F3',
+            'secondary': '#FFC107',
+            'text': '#333333',
+            'success': '#4CAF50',
+            'error': '#f44336'
+        }
+        
+        self.root.configure(bg=self.colors['bg'])
+        
+        # Kamera ve kontrol değişkenleri
+        self.screen_width = screen_width
+        self.screen_height = screen_height
         self.cap = cv2.VideoCapture(0)
         self.cap.set(cv2.CAP_PROP_FPS, 60)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
@@ -407,40 +381,133 @@ class App:
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
         self.controller = HandMouseController(self.screen_width, self.screen_height)
-        
         self.running = False
         self.mirror = tk.BooleanVar(value=True)
         
         self.setup_ui()
     
+    def check_tutorial_status(self):
+        try:
+            with open(self.tutorial_file, 'r') as f:
+                return f.read().strip() == 'completed'
+        except FileNotFoundError:
+            return False
+
+    def mark_tutorial_completed(self):
+        try:
+            with open(self.tutorial_file, 'w') as f:
+                f.write('completed')
+            self.tutorial_shown = True
+        except Exception as e:
+            print(f"Eğitim durumu kaydedilemedi: {e}")
+    
     def setup_ui(self):
-        self.start_button = tk.Button(self.root, text="Başlat", command=self.start_calibration)
-        self.start_button.pack(pady=20)
+        # Logo/başlık alanı
+        self.header_frame = tk.Frame(self.root, bg=self.colors['bg'])
+        self.header_frame.pack(fill='x', pady=10)
         
-        self.mirror_check = tk.Checkbutton(self.root, text="Görüntüyü Aynala",
-                                         variable=self.mirror)
+        self.title_label = tk.Label(self.header_frame,
+                                  text="El Kontrollü Fare",
+                                  font=('Helvetica', 24, 'bold'),
+                                  bg=self.colors['bg'],
+                                  fg=self.colors['text'])
+        self.title_label.pack()
+        
+        # Durum göstergesi
+        self.status_frame = tk.Frame(self.root, bg=self.colors['bg'])
+        self.status_frame.pack(fill='x', pady=10)
+        
+        self.status_label = tk.Label(self.status_frame,
+                                   text="Hazır",
+                                   font=('Helvetica', 12),
+                                   bg=self.colors['bg'],
+                                   fg=self.colors['text'])
+        self.status_label.pack()
+        
+        # Kamera önizleme (opsiyonel)
+        self.preview_frame = tk.Frame(self.root, 
+                                    bg='black',
+                                    width=300,
+                                    height=220)
+        self.preview_frame.pack(pady=10)
+        self.preview_frame.pack_propagate(False)
+        
+        # Kontrol butonları
+        self.control_frame = tk.Frame(self.root, bg=self.colors['bg'])
+        self.control_frame.pack(fill='x', pady=10, padx=20)
+        
+        button_style = {
+            'font': ('Helvetica', 12, 'bold'),
+            'relief': 'flat',
+            'padx': 20,
+            'pady': 10
+        }
+        
+        self.start_button = tk.Button(self.control_frame,
+                                    text="Başlat",
+                                    bg=self.colors['success'],
+                                    fg='white',
+                                    command=self.start_app,
+                                    **button_style)
+        self.start_button.pack(fill='x', pady=5)
+        
+        self.tutorial_button = tk.Button(self.control_frame,
+                                       text="Eğitimi Göster",
+                                       bg=self.colors['primary'],
+                                       fg='white',
+                                       command=self.show_tutorial,
+                                       **button_style)
+        self.tutorial_button.pack(fill='x', pady=5)
+        
+        # Ayarlar
+        self.settings_frame = tk.LabelFrame(self.root,
+                                          text="Ayarlar",
+                                          bg=self.colors['bg'],
+                                          fg=self.colors['text'],
+                                          font=('Helvetica', 12))
+        self.settings_frame.pack(fill='x', padx=40, pady=10)
+        
+        self.mirror_check = tk.Checkbutton(self.settings_frame,
+                                         text="Görüntüyü Aynala",
+                                         variable=self.mirror,
+                                         bg=self.colors['bg'],
+                                         fg=self.colors['text'],
+                                         selectcolor=self.colors['primary'],
+                                         font=('Helvetica', 10))
         self.mirror_check.pack(pady=10)
-    
-    def start_calibration(self):
-        # Kalibrasyon ekranını başlat
-        calibration = CalibrationScreen(self.screen_width, self.screen_height, 
-                                      self.cap, self.controller)
-        self.root.withdraw()  # Ana pencereyi gizle
-        calibration.run()
-        self.root.deiconify()  # Ana pencereyi göster
         
-        # Kalibrasyon tamamlandıktan sonra tracking'i başlat
-        if calibration.is_complete:
-            self.toggle_tracking()
+        # Durum çubuğu
+        self.statusbar = tk.Label(self.root,
+                                text="Hazır",
+                                bd=1,
+                                relief=tk.SUNKEN,
+                                anchor=tk.W,
+                                bg=self.colors['bg'],
+                                fg=self.colors['text'])
+        self.statusbar.pack(side=tk.BOTTOM, fill=tk.X)
     
-    def toggle_tracking(self):
-        if self.running:
-            self.running = False
-            self.start_button.config(text="Başlat")
-        else:
+    def show_tutorial(self):
+        tutorial = TutorialOverlay(self.root, 
+                                 self.root.winfo_screenwidth(),
+                                 self.root.winfo_screenheight())
+        self.root.wait_window(tutorial.window)
+        self.mark_tutorial_completed()
+    
+    def start_app(self):
+        if not self.running:
+            if not self.tutorial_shown:
+                tutorial = TutorialOverlay(self.root, self.screen_width, self.screen_height)
+                self.root.wait_window(tutorial.window)
+                self.mark_tutorial_completed()
+            
             self.running = True
-            self.start_button.config(text="Durdur")
+            self.start_button.config(text="Durdur", bg=self.colors['error'])
+            self.status_label.config(text="Çalışıyor")
             Thread(target=self.update, daemon=True).start()
+        else:
+            self.running = False
+            self.start_button.config(text="Başlat", bg=self.colors['success'])
+            self.status_label.config(text="Hazır")
     
     def update(self):
         while self.running:
