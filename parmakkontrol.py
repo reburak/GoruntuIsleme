@@ -41,13 +41,13 @@ class TutorialOverlay:
             },
             {
                 'title': 'İşaretparmağı - Fare Hareketi',
-                'text': 'İşaretparmağınızı kaldırın ve hareket ettirin.\nParmağınızın hareketi fareyi kontrol edecek.',
-                'image': 'images/pointer_move.png'
+                'text': 'Elinizi açık tutun ve hareket ettirin.\nParmağınızın hareketi fareyi kontrol edecek.',
+                'image': 'images/left_click.png'
             },
             {
                 'title': 'Baş Parmak + İşaret Parmağı - Sol Tık',
                 'text': 'Baş parmak ve işaret parmağınızı birleştirin.\nBu hareket sol tıklamayı tetikler.',
-                'image': 'images/left_click.png'
+                'image': 'images/pointer_move.png'
             },
             {
                 'title': 'Baş Parmak + Orta Parmak - Sağ Tık',
