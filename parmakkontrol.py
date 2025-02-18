@@ -94,7 +94,7 @@ class TutorialOverlay:
                                  bg=self.colors['bg'],
                                  fg=self.colors['text'],
                                  wraplength=600)
-        self.text_label.pack(pady=30)
+        self.text_label.pack(pady=10)
         
         # İlerleme göstergesi
         self.progress_frame = tk.Frame(self.main_frame, bg=self.colors['bg'])
